@@ -1,0 +1,34 @@
+[package]
+name = "hanteker_gui"
+authors = ["Koosha Hosseiny"]
+version = "0.3.0"
+edition = "2021"
+resolver = "2"
+
+[dependencies]
+log = "0.4"
+pretty_env_logger = "0.4"
+anyhow = "1.0"
+thiserror = "1.0"
+strum = "0.24"
+strum_macros = "0.24"
+
+libusb = { package = "rusb", version = "0.9" }
+
+# hanteker_lib = { version = "0.4.0", features = ["gui"] }
+hanteker_lib = { path = "../hanteker/hanteker_lib", version = "0.4.0", features = ["gui"] }
+
+#tracing-subscriber = "0.3"
+#eframe = "0.17"
+
+druid-widget-nursery = { git = "https://github.com/linebender/druid-widget-nursery" }
+
+[patch.crates-io.druid]
+git = "https://github.com/linebender/druid"
+rev = "fc05e965c85fced8720c655685e02478e0530e94"
+
+# So that hanteker_lib pulls in proper version of druid
+[dependencies.druid]
+git = "https://github.com/linebender/druid"
+rev = "fc05e965c85fced8720c655685e02478e0530e94"
+features = ["im"]
