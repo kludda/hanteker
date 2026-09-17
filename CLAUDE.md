@@ -225,32 +225,79 @@ not a real property of the device. Trust the formula.
 `scripts/capture_to_csv.py` and `scripts/fft_freq.py` — use
 `sample_rate = 100 / SECONDS_PER_DIV[time_scale]`.
 
-### Voltage calibration — ROUGH, only lightly verified
+### Voltage calibration — refined via AWG self-consistency, still not multimeter-verified
 
 ```
 voltage = (raw_byte - 127.5) * volts_per_count
-volts_per_count ≈ 0.03922  (= 4.0 / 102), measured at --scale v1, --probe x1
+volts_per_count ≈ selected_scale_in_volts_per_div / 24   (was /25.5, see below)
 ```
 
-Derived from a single measurement: a known ±2 V (4 Vpp) external signal at
-`v1` (1 V/div) produced a 102-count peak-to-peak swing. 127.5 is the
-theoretical 8-bit ADC midpoint (measured means have consistently landed
-within ~1 count of this with no explicit channel offset, e.g. 124.7–127.2
-across many captures).
+At `--scale v1, --probe x1` specifically: `volts_per_count ≈ 0.040-0.042`.
+127.5 is the theoretical 8-bit ADC midpoint (measured centers land within
+~1-1.5 counts of this with channel offset 0, e.g. 126.2–128.0 across many
+captures this session).
 
-**Not verified against other `--scale` settings.** If `counts/div` is a
-device constant (matching how `samples/div` turned out to be a device
-constant for time), then by extrapolation:
+**Method (this session):** fed CH1 (probe x1, DC coupling) directly from the
+device's own AWG, `awg --type square --frequency 1000 --offset 0`, and swept
+two variables independently, using `capture -c1 -n1 --capture-chunk 4096`,
+with the middle-portion clean plateau means (see capture-contamination note
+below) as the measurement:
 
-```
-volts_per_count ≈ selected_scale_in_volts / 25.5   (25.5 = 1V / 0.03922V-per-count at v1)
-```
+1. **Amplitude sweep** at fixed `--scale v1`: `--amplitude` 0.5, 1.0, 1.5,
+   2.0, 2.5 V produced peak-to-peak raw counts 23.7, 48.2, 72.7, 98.4, 123.7
+   — a clean line, `counts_pp ≈ 50.0 × amplitude_V − 1.6` (least-squares fit).
+   The AWG's "amplitude" setting behaves as a **peak** value (signal swings
+   ±amplitude around the offset), i.e. `Vpp = 2 × amplitude` — confirmed
+   because that convention makes this session's result agree with the
+   original external-signal measurement (0.0392 V/count) to within ~2%,
+   instead of being off by 2×. Gives `volts_per_count(v1,x1) ≈ 2/50.0 ≈ 0.0400`.
+2. **Scale sweep** at fixed `--amplitude 1.0` (Vpp = 2 V): swept
+   `channel --scale` across `mv500, v1, v2, v5, v10` (`--probe x1` unchanged).
+   `Vpp_counts × scale / 2` (i.e. the implied divisor `K` in
+   `volts_per_count = scale/K`) came out to 24.3, 24.1, 24.0, 23.7 for
+   `mv500, v1, v2, v5` respectively — consistent to within ~2.5%, average
+   **K ≈ 24.0**. (`v10` gave a much noisier K≈45.7 off a 4-count swing —
+   too few counts to trust, discard.)
 
-Treat this extrapolation as a starting guess only, not verified data. If
-precision matters, recalibrate the same way time was calibrated: apply a
+So the old untested extrapolation (`/25.5`, guessing a 10-division full
+range) was too high by ~6%; the empirically fit divisor is **~24**, fairly
+flat across `mv500`–`v5`. Combining both sweeps at `v1` gives K in
+24.1–25.0 depending on method — call it **K ≈ 24–25**, i.e.
+`volts_per_count ≈ scale/24` as the best available single formula, good to
+roughly ±5%.
+
+**Caveat: this calibrates the scope against the device's own AWG-stated
+amplitude, not an absolute external reference.** No multimeter/known
+external source was used this session (only the original single 4 Vpp
+external-signal data point, still in agreement within ~2%). If the AWG's
+own amplitude setting has a calibration error, that error is baked into
+this formula too. `--probe` values other than `x1` remain completely
+untested.
+
+If precision matters beyond this, recalibrate the same way: apply a
 **known** AWG amplitude (`awg --amplitude ...`), capture cleanly (`-n 1`),
-measure peak-to-peak counts, solve for `volts_per_count` at that specific
-`--scale`.
+measure peak-to-peak counts on the *middle* of the capture only, solve for
+`volts_per_count` at that specific `--scale`.
+
+#### Capture buffer contamination at head/tail — READ BEFORE MEASURING PP/MIN/MAX
+
+A single `capture --capture-chunk 4096` call is **not uniformly valid data**:
+the first ~400-470 samples and the last ~460-510 samples of every capture
+this session were a near-ADC-midpoint filler value (bouncing in the
+123-134 range, unaffected by `--scale`, i.e. clearly not real amplified
+CH1 signal) — roughly the first/last ~11% of the buffer in each case, with
+the boundary position varying capture-to-capture (seen from as early as
+sample ~417 to as late as ~467 at the head, symmetric behavior at the
+tail). Only the middle ~70-75% of any single capture is trustworthy.
+
+This is presumably a bigger-scale manifestation of the same chunked
+re-triggering behavior already documented above (`capture()` re-issuing
+`SCOPE_START_RECV` before every ≤64-byte USB sub-read) — it may explain
+some of the previously-reported "spurious zero-crossing" glitches too.
+**When computing peak-to-peak/min/max/any amplitude statistic from a raw
+capture, trim a safe margin (this session used 600 samples) off both ends
+first**, or use a robust statistic (mode of values above/below the
+midpoint) that isn't dominated by two contiguous contaminated runs.
 
 Trigger level (`scope --trigger-level`) is a separate device setting (where
 the trigger fires) — unrelated to this voltage calibration, don't conflate
@@ -321,10 +368,19 @@ When asked something like *"capture from the scope so we can FFT in the
 
 ## Open items for a future session
 
-- Voltage calibration only exists at `--scale v1`, `--probe x1`. Needs the
-  same rigorous AWG-based recalibration done for sample rate, ideally at a
-  couple of different `--scale` settings to confirm/refute the
-  `volts_per_count ∝ scale` extrapolation.
+- Voltage calibration now has an AWG-based multi-scale fit (`volts_per_count
+  ≈ scale/24`, see above) but is still only checked at `--probe x1` and
+  only self-consistently against the device's own AWG amplitude setting —
+  an independent multimeter/known-external-source check (like the original
+  single 4 Vpp data point) at a couple of different scales would confirm
+  whether the AWG amplitude setting itself is accurate, and whether `K≈24`
+  holds up at other probe attenuations.
+- The capture head/tail contamination (new finding, see "Capture buffer
+  contamination" above) needs characterization: is the contaminated region
+  a fixed sample count, a fixed fraction, or time-based (e.g. tied to
+  `--time-scale`)? Only tested at `--capture-chunk 4096`, `--time-scale
+  ms1`, `-n 1`. Also worth checking whether it correlates with the ~44%
+  single-call zero-crossing glitch rate noted below — same root cause?
 - Exact single-call `--capture-chunk` ceiling between 4096 and 40960 not
   found. Worth bisecting carefully (with the user's attention, since a wedge
   needs a physical battery pull to fix) if larger single captures become

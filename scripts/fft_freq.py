@@ -16,16 +16,9 @@ import cmath
 import math
 import sys
 
-SECONDS_PER_DIV = {
-    "ns5": 5e-9, "ns10": 1e-8, "ns20": 2e-8, "ns50": 5e-8, "ns100": 1e-7,
-    "ns200": 2e-7, "ns500": 5e-7,
-    "us1": 1e-6, "us2": 2e-6, "us5": 5e-6, "us10": 1e-5, "us20": 2e-5,
-    "us50": 5e-5, "us100": 1e-4, "us200": 2e-4, "us500": 5e-4,
-    "ms1": 1e-3, "ms2": 2e-3, "ms5": 5e-3, "ms10": 1e-2, "ms20": 2e-2,
-    "ms50": 5e-2, "ms100": 1e-1, "ms200": 2e-1, "ms500": 5e-1,
-    "s1": 1.0, "s2": 2.0, "s5": 5.0, "s10": 10.0, "s20": 20.0,
-    "s50": 50.0, "s100": 100.0, "s200": 200.0, "s500": 500.0,
-}
+import hantek_calib as hc
+
+SECONDS_PER_DIV = hc.SECONDS_PER_DIV
 
 
 def fft(a):
