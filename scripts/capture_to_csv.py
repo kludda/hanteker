@@ -8,11 +8,12 @@ Sample rate uses the verified geometry-based formula (see CLAUDE.md "Sample
 rate - VERIFIED formula" and hantek_calib.py): sample_rate = 100 /
 time_per_div_seconds.
 
-Voltage calibration is channel/scale-specific and comes from calibration.json
-(see calibrate.py and CLAUDE.md "Voltage calibration"). Pass --channel and
---scale (matching what the capture was actually taken with) to look it up;
-without them this falls back to the original single-point external-signal
-measurement (v1/x1). --volts-per-count/--center-code override either.
+Voltage conversion defaults to the physically-measured 25 counts/div, 128
+center-code formula (see hantek_calib.py and CLAUDE.md "Voltage
+calibration"). Pass --channel and --scale (matching what the capture was
+actually taken with) to check for a calibration.json override for that
+exact channel/scale instead. --volts-per-count/--center-code override
+either.
 """
 import argparse
 import csv

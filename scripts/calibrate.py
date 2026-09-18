@@ -35,6 +35,7 @@ DEFAULT_SETTLE = 2.0  # seconds to let the --scale relay finish switching
 DEFAULT_SCALES = ["mv500", "v1", "v2", "v5"]  # smaller scales clip, v10 is too coarse to fit well
 DEFAULT_AMPLITUDES = [0.5, 1.0, 1.5, 2.0, 2.5]
 DEFAULT_FREQUENCY = 1000.0
+DEFAULT_TIME_SCALE = "ms1"  # 100 samples/period at DEFAULT_FREQUENCY, see CLAUDE.md sample-rate formula
 MAX_AMPLITUDE = 2.5  # device limit
 
 
@@ -57,9 +58,19 @@ def run_cli(cli, *args):
     return result.stdout
 
 
-def capture(cli, channel, capture_chunk):
-    return run_cli(cli, "capture", "-c", str(channel), "-n", "1",
-                    "--capture-chunk", str(capture_chunk))
+def capture(cli, channel, capture_chunk, retries=6):
+    """Occasionally the first capture(s) after a scale/mode change hit a
+    transient 'failed to read from usb' -- retry a few times before giving
+    up (the device itself stays fine, see CLAUDE.md)."""
+    last_error = None
+    for attempt in range(retries):
+        try:
+            return run_cli(cli, "capture", "-c", str(channel), "-n", "1",
+                            "--capture-chunk", str(capture_chunk))
+        except RuntimeError as e:
+            last_error = e
+            time.sleep(1.5)
+    raise last_error
 
 
 def plateau_pp(raw: bytes, trim: int):
@@ -87,11 +98,16 @@ def fit_through_origin(xs, ys):
     return sum(x * y for x, y in zip(xs, ys)) / sxx
 
 
-def calibrate_channel(cli, channel, scales, amplitudes, frequency, capture_chunk, trim, settle):
+def calibrate_channel(cli, channel, scales, amplitudes, frequency, capture_chunk, trim, settle,
+                       time_scale):
     print(f"Setting up CH{channel}: scope mode, {frequency:.0f} Hz square wave...")
     run_cli(cli, "device", "-m", "scope", "--start")
-    run_cli(cli, "channel", "-c", str(channel), "--enable", "--coupling", "dc",
-            "--probe", "x1", "--offset", "0")
+    time.sleep(1.0)
+    run_cli(cli, "channel", "-c", str(channel), "--enable", "--coupling", "dc", "--probe", "x1")
+    # capture() reads garbage/errors until a --time-scale has been set at least
+    # once on a freshly-started scope -- not obvious from the protocol, found by
+    # trial and error.
+    run_cli(cli, "scope", "--time-scale", time_scale)
     run_cli(cli, "awg", "--type", "square", "--frequency", str(frequency),
             "--offset", "0", "--start")
 
@@ -100,28 +116,33 @@ def calibrate_channel(cli, channel, scales, amplitudes, frequency, capture_chunk
 
     try:
         for scale in scales:
-            run_cli(cli, "channel", "-c", str(channel), "--scale", scale)
-            time.sleep(settle)
+            try:
+                run_cli(cli, "channel", "-c", str(channel), "--scale", scale, "--offset", "0")
+                time.sleep(settle)
 
-            points = []
-            clipped_any = False
-            for amplitude in amplitudes:
-                run_cli(cli, "awg", "--amplitude", str(amplitude))
-                time.sleep(0.3)
-                raw = capture(cli, channel, capture_chunk)
-                plateau = plateau_pp(raw, trim)
-                if plateau is None:
-                    print(f"  scale={scale} amplitude={amplitude}: capture unusable, skipping")
-                    continue
-                low_mean, high_mean, clipped = plateau
-                pp = high_mean - low_mean
-                centers.append((low_mean + high_mean) / 2)
-                if clipped:
-                    clipped_any = True
-                    print(f"  scale={scale} amplitude={amplitude}: CLIPPED (pp={pp:.1f}), skipping")
-                    continue
-                points.append((amplitude, pp))
-                print(f"  scale={scale} amplitude={amplitude}: pp={pp:.2f} counts")
+                points = []
+                clipped_any = False
+                for amplitude in amplitudes:
+                    run_cli(cli, "awg", "--amplitude", str(amplitude))
+                    time.sleep(0.3)
+                    raw = capture(cli, channel, capture_chunk)
+                    plateau = plateau_pp(raw, trim)
+                    if plateau is None:
+                        print(f"  scale={scale} amplitude={amplitude}: capture unusable, skipping")
+                        continue
+                    low_mean, high_mean, clipped = plateau
+                    pp = high_mean - low_mean
+                    centers.append((low_mean + high_mean) / 2)
+                    if clipped:
+                        clipped_any = True
+                        print(f"  scale={scale} amplitude={amplitude}: CLIPPED (pp={pp:.1f}), skipping")
+                        continue
+                    points.append((amplitude, pp))
+                    print(f"  scale={scale} amplitude={amplitude}: pp={pp:.2f} counts")
+            except RuntimeError as e:
+                print(f"  scale={scale}: persistent USB error ({e}), stopping here -- "
+                      f"keeping whatever scales already succeeded", file=sys.stderr)
+                break
 
             if len(points) < 2:
                 print(f"  scale={scale}: not enough clean points, skipping")
@@ -144,7 +165,10 @@ def calibrate_channel(cli, channel, scales, amplitudes, frequency, capture_chunk
             print(f"  scale={scale}: volts_per_count={volts_per_count:.5f} "
                   f"(counts_per_div={counts_per_div:.2f})")
     finally:
-        run_cli(cli, "awg", "--stop")
+        try:
+            run_cli(cli, "awg", "--stop")
+        except RuntimeError:
+            pass
 
     adc_center = statistics.mean(centers) if centers else None
     counts_per_div_values = [v["counts_per_div"] for v in scale_results.values()]
@@ -182,6 +206,9 @@ def main():
                          help="samples to drop off each end of a capture before analyzing")
     parser.add_argument("--settle", type=float, default=DEFAULT_SETTLE,
                          help="seconds to wait after changing --scale before capturing")
+    parser.add_argument("--time-scale", default=DEFAULT_TIME_SCALE, choices=sorted(hc.SECONDS_PER_DIV),
+                         help="scope timebase; only needs to give a clean multi-period "
+                              "capture of --frequency, doesn't affect the voltage fit")
     args = parser.parse_args()
 
     scales = [s.strip() for s in args.scales.split(",") if s.strip()]
@@ -204,7 +231,7 @@ def main():
 
     result = calibrate_channel(
         args.cli, args.channel, scales, amplitudes, args.frequency,
-        args.capture_chunk, args.trim, args.settle,
+        args.capture_chunk, args.trim, args.settle, args.time_scale,
     )
 
     calibration = hc.load_calibration(args.out)
@@ -212,6 +239,9 @@ def main():
     hc.save_calibration(calibration, args.out)
 
     print(f"\nSaved calibration for CH{args.channel} to {args.out}:")
+    if not result["scales"]:
+        print("  no scales produced usable data")
+        return
     print(f"  adc_center = {result['adc_center']:.2f}")
     for scale, entry in result["scales"].items():
         print(f"  {scale:6s}  volts_per_count={entry['volts_per_count']:.5f}  "

@@ -225,59 +225,61 @@ not a real property of the device. Trust the formula.
 `scripts/capture_to_csv.py` and `scripts/fft_freq.py` — use
 `sample_rate = 100 / SECONDS_PER_DIV[time_scale]`.
 
-### Voltage calibration — refined via AWG self-consistency, still not multimeter-verified
+### Voltage calibration — settled via a physical measurement, not curve-fitting
 
 ```
-voltage = (raw_byte - 127.5) * volts_per_count
-volts_per_count ≈ selected_scale_in_volts_per_div / 24   (was /25.5, see below)
+voltage = (raw_byte - 128) * volts_per_count
+volts_per_count = selected_scale_in_volts_per_div / 25
 ```
 
-At `--scale v1, --probe x1` specifically: `volts_per_count ≈ 0.040-0.042`.
-127.5 is the theoretical 8-bit ADC midpoint (measured centers land within
-~1-1.5 counts of this with channel offset 0, e.g. 126.2–128.0 across many
-captures this session).
+**This is the adopted formula** (implemented as `DEFAULT_COUNTS_PER_DIV = 25`,
+`DEFAULT_CENTER_CODE = 128` in `scripts/hantek_calib.py`), derived from a
+direct physical measurement of the device rather than any capture-based
+curve fit:
 
-**Method (this session):** fed CH1 (probe x1, DC coupling) directly from the
-device's own AWG, `awg --type square --frequency 1000 --offset 0`, and swept
-two variables independently, using `capture -c1 -n1 --capture-chunk 4096`,
-with the middle-portion clean plateau means (see capture-contamination note
-below) as the measurement:
+- The display shows ±4 divisions vertically.
+- The offset control moves the trace by a fixed **25 button-presses per
+  division**.
+- A known 2V signal at `0.5V/div` (i.e. sitting 4 divisions from center)
+  starts clipping at **~28 button-presses** of added offset in one
+  direction — 28/25 ≈ 1.12 extra divisions, so the ADC's half-range is
+  4 + 1.12 ≈ 5.12 divisions, full range ≈ 10.24 divisions.
+- `256 counts / 10.24 divisions = 25.0 counts/div` *exactly* — matching the
+  button-press step size, which strongly suggests each button press moves
+  the offset by exactly 1 raw ADC count (25 presses = 1 division = 25
+  counts), a clean, plausible firmware design rather than a coincidence.
 
-1. **Amplitude sweep** at fixed `--scale v1`: `--amplitude` 0.5, 1.0, 1.5,
-   2.0, 2.5 V produced peak-to-peak raw counts 23.7, 48.2, 72.7, 98.4, 123.7
-   — a clean line, `counts_pp ≈ 50.0 × amplitude_V − 1.6` (least-squares fit).
-   The AWG's "amplitude" setting behaves as a **peak** value (signal swings
-   ±amplitude around the offset), i.e. `Vpp = 2 × amplitude` — confirmed
-   because that convention makes this session's result agree with the
-   original external-signal measurement (0.0392 V/count) to within ~2%,
-   instead of being off by 2×. Gives `volts_per_count(v1,x1) ≈ 2/50.0 ≈ 0.0400`.
-2. **Scale sweep** at fixed `--amplitude 1.0` (Vpp = 2 V): swept
-   `channel --scale` across `mv500, v1, v2, v5, v10` (`--probe x1` unchanged).
-   `Vpp_counts × scale / 2` (i.e. the implied divisor `K` in
-   `volts_per_count = scale/K`) came out to 24.3, 24.1, 24.0, 23.7 for
-   `mv500, v1, v2, v5` respectively — consistent to within ~2.5%, average
-   **K ≈ 24.0**. (`v10` gave a much noisier K≈45.7 off a 4-count swing —
-   too few counts to trust, discard.)
+This method has essentially no dependence on cable/connection noise,
+capture-buffer artifacts, or AWG amplitude accuracy — it only requires
+reading the on-screen division count and the button presses to clip,
+things the device shows/does directly. **Trust this over the AWG-based
+fit below.**
 
-So the old untested extrapolation (`/25.5`, guessing a 10-division full
-range) was too high by ~6%; the empirically fit divisor is **~24**, fairly
-flat across `mv500`–`v5`. Combining both sweeps at `v1` gives K in
-24.1–25.0 depending on method — call it **K ≈ 24–25**, i.e.
-`volts_per_count ≈ scale/24` as the best available single formula, good to
-roughly ±5%.
+Only verified at `--probe x1`; other probe attenuations untested.
 
-**Caveat: this calibrates the scope against the device's own AWG-stated
-amplitude, not an absolute external reference.** No multimeter/known
-external source was used this session (only the original single 4 Vpp
-external-signal data point, still in agreement within ~2%). If the AWG's
-own amplitude setting has a calibration error, that error is baked into
-this formula too. `--probe` values other than `x1` remain completely
-untested.
+<details>
+<summary>Superseded: AWG-based curve fit (kept for reference, more noise-prone)</summary>
 
-If precision matters beyond this, recalibrate the same way: apply a
-**known** AWG amplitude (`awg --amplitude ...`), capture cleanly (`-n 1`),
-measure peak-to-peak counts on the *middle* of the capture only, solve for
-`volts_per_count` at that specific `--scale`.
+An earlier session fed CH1 from the device's own AWG (`awg --type square
+--frequency 1000 --offset 0`) and swept amplitude/scale, fitting
+`volts_per_count ≈ scale/24` (vs. the `/25` physical answer above — within
+~4%). That approach turned out to be quite fragile in practice: a later
+session hit escalating "stuck" readings scale-to-scale (frozen,
+amplitude-independent plateaus, non-standard ADC centers ~107-119) that
+were eventually traced to an intermittent physical connection issue on the
+AWG→channel cable, not a real property of the device — some of the
+"clean-looking" curve-fit data from the first session may have been
+affected by milder versions of the same issue without being caught. The
+button-press method above sidesteps all of this since it doesn't depend on
+a second signal path (AWG → cable → channel) being clean at all.
+
+`scripts/calibrate.py` and `calibration.json` still exist for anyone who
+wants to try to beat the /25 default for a specific channel/scale, but
+given how noisy that method was here, don't trust a calibration.json
+result over the physical default without independent verification (e.g. a
+multimeter).
+
+</details>
 
 #### Capture buffer contamination at head/tail — READ BEFORE MEASURING PP/MIN/MAX
 
@@ -298,6 +300,16 @@ some of the previously-reported "spurious zero-crossing" glitches too.
 capture, trim a safe margin (this session used 600 samples) off both ends
 first**, or use a robust statistic (mode of values above/below the
 midpoint) that isn't dominated by two contiguous contaminated runs.
+
+A later capture (mv500 scale, large-swing square wave, where the two real
+signal levels were far enough apart to make the artifact obvious) showed
+the actual *mechanism* more clearly than the original near-center-blob
+description above: the head/tail regions aren't a fixed filler value, they
+show a **period-2 alternation** — every other sample jumping between two
+distinct levels (looked like an interleaved/misaligned readback, e.g.
+CH1/CH2 or two internal registers), completely different from the real
+~100-sample-period square wave in the middle of the buffer. The good,
+trustworthy region was still ~85% of the buffer in the middle either way.
 
 Trigger level (`scope --trigger-level`) is a separate device setting (where
 the trigger fires) — unrelated to this voltage calibration, don't conflate
@@ -368,13 +380,12 @@ When asked something like *"capture from the scope so we can FFT in the
 
 ## Open items for a future session
 
-- Voltage calibration now has an AWG-based multi-scale fit (`volts_per_count
-  ≈ scale/24`, see above) but is still only checked at `--probe x1` and
-  only self-consistently against the device's own AWG amplitude setting —
-  an independent multimeter/known-external-source check (like the original
-  single 4 Vpp data point) at a couple of different scales would confirm
-  whether the AWG amplitude setting itself is accurate, and whether `K≈24`
-  holds up at other probe attenuations.
+- Voltage calibration is now settled by a physical measurement
+  (`volts_per_count = scale/25`, center=128 — see above) rather than the
+  earlier noisy AWG curve fit. Only remaining gap: verified at `--probe x1`
+  only. Worth repeating the button-press clipping check at x10/x100/x1000
+  if those probes end up in use, though there's no reason to expect the
+  ADC-side constant (25 counts/div) to depend on probe attenuation at all.
 - The capture head/tail contamination (new finding, see "Capture buffer
   contamination" above) needs characterization: is the contaminated region
   a fixed sample count, a fixed fraction, or time-based (e.g. tied to

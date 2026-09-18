@@ -5,14 +5,19 @@ Time-axis conversion (`sample_rate_for`) is a verified, geometry-based
 formula that needs no calibration file -- see CLAUDE.md "Sample rate -
 VERIFIED formula": sample_rate = 100 / time_per_div_seconds.
 
-Voltage conversion depends on the physical channel, probe, and --scale, and
-is NOT derivable from the protocol -- it's measured empirically by
-`calibrate.py` (feeding the device's own AWG into a channel) and stored in
-calibration.json next to this file. If no calibration is available for a
-requested channel/scale, `voltage_scale_for` extrapolates from that
-channel's fitted counts_per_div, or from DEFAULT_COUNTS_PER_DIV as a last
-resort -- see CLAUDE.md "Voltage calibration" for the reasoning behind that
-number and its ~5% uncertainty.
+Voltage conversion is NOT derivable from the protocol, but is well pinned
+down by a physical measurement (not curve-fitting): the display is +/-4
+divisions, the offset control moves the trace by 25 button-presses per
+division, and a signal starts clipping right at the button-press count that
+implies a 256-count (8-bit) ADC range of 256/25 = 10.24 divisions -- i.e.
+each division is exactly 25 raw counts, independent of channel/scale/probe.
+See CLAUDE.md "Voltage calibration" for the derivation and how it compares
+to the earlier (noisier) AWG-based curve fit.
+
+`calibrate.py` (AWG-based, per-channel/scale) and calibration.json still
+exist for anyone who wants to try to do better than DEFAULT_COUNTS_PER_DIV,
+but given how noisy that method turned out to be on this hardware, the
+default below should normally be trusted over it.
 """
 import json
 import sys
@@ -39,10 +44,12 @@ SCALE_VOLTS = {
     "v1": 1.0, "v2": 2.0, "v5": 5.0, "v10": 10.0,
 }
 
-# Last-resort defaults, used only when a channel has no calibration at all.
-DEFAULT_COUNTS_PER_DIV = 24.0  # this project's best current estimate, see CLAUDE.md
-DEFAULT_VOLTS_PER_COUNT = 4.0 / 102  # single external-signal measurement at v1/x1, see CLAUDE.md
-DEFAULT_CENTER_CODE = 127.5  # theoretical 8-bit ADC midpoint
+# Physically measured via the offset button's step size, see module docstring
+# and CLAUDE.md "Voltage calibration" -- trust this over a per-channel
+# calibration.json fit unless that fit is itself independently verified.
+DEFAULT_COUNTS_PER_DIV = 25.0
+DEFAULT_CENTER_CODE = 128.0  # 256/2, i.e. mid-code of the 8-bit ADC
+DEFAULT_VOLTS_PER_COUNT = SCALE_VOLTS["v1"] / DEFAULT_COUNTS_PER_DIV  # = 0.04, for v1/x1
 
 
 def sample_rate_for(time_scale: str) -> float:
@@ -70,30 +77,24 @@ def save_calibration(calibration: dict, path=None) -> None:
 def voltage_scale_for(channel, scale: str, calibration: dict, warn: bool = True):
     """Return (volts_per_count, center_code) for the given channel/--scale.
 
-    Looks up an exact match from calibration.json first, then falls back to
-    that channel's fitted counts_per_div (extrapolating volts_per_count =
-    SCALE_VOLTS[scale] / counts_per_div), then to DEFAULT_COUNTS_PER_DIV.
+    Defaults to the physically-measured DEFAULT_COUNTS_PER_DIV/CENTER_CODE
+    (see module docstring) unless an explicit calibration.json entry for
+    this exact channel/scale exists, in which case that takes precedence
+    (e.g. if you've independently verified it beats the default here).
     """
     chan = calibration.get(str(channel), {})
     scales = chan.get("scales", {})
-    center = chan.get("adc_center") or DEFAULT_CENTER_CODE
 
     if scale in scales:
+        center = chan.get("adc_center") or DEFAULT_CENTER_CODE
         return scales[scale]["volts_per_count"], center
 
-    if "counts_per_div_fit" in chan:
-        counts_per_div = chan["counts_per_div_fit"]
-        source = f"channel {channel}'s fitted counts_per_div"
-    else:
-        counts_per_div = DEFAULT_COUNTS_PER_DIV
-        source = "uncalibrated default counts_per_div"
+    if warn and scale not in scales and chan:
+        print(f"warning: calibration.json has channel {channel} but no entry for "
+              f"scale {scale!r}, using the physically-measured default instead "
+              f"({DEFAULT_COUNTS_PER_DIV:.2f} counts/div)", file=sys.stderr)
 
-    if warn:
-        print(f"warning: no calibration for channel {channel} scale {scale!r}, "
-              f"extrapolating from {source} ({counts_per_div:.2f} counts/div)",
-              file=sys.stderr)
-
-    return SCALE_VOLTS[scale] / counts_per_div, center
+    return SCALE_VOLTS[scale] / DEFAULT_COUNTS_PER_DIV, DEFAULT_CENTER_CODE
 
 
 def raw_to_voltage(raw_byte: int, volts_per_count: float, center_code: float) -> float:
