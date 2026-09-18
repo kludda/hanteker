@@ -6,11 +6,69 @@ This is a fork of https://github.com/hkoosha/hanteker (CLI + lib for the Hantek
 https://github.com/hkoosha/hanteker_gui lives at `../hanteker_gui` with the same
 fix applied.
 
-The device talks a reverse-engineered USB protocol with **no official
-documentation** — everything about sample rates, calibration, and protocol
-quirks below was derived empirically this session, on this specific unit. Trust
-the verification methodology described here more than any single number if the
-two ever conflict on a future device/firmware revision.
+The device talks a reverse-engineered USB **protocol** with no official
+documentation — everything about protocol quirks, calibration, and the USB
+command structure below was derived empirically this session, on this
+specific unit. Trust the verification methodology described here more than
+any single number if the two ever conflict on a future device/firmware
+revision.
+
+There IS an official **hardware/feature datasheet** for this model (seller
+spec sheet, not protocol docs) — see "Official datasheet specs" below.
+Where it overlaps with something we derived empirically, prefer the
+datasheet, but flag the discrepancy rather than silently picking one (see
+the sampling-rate note below for an example of exactly that).
+
+## Official datasheet specs
+
+Transcribed from the seller's spec sheet (2D42-class device), for
+reference. Not independently re-verified against this specific unit beyond
+what's noted elsewhere in this document.
+
+- Channels: 2. Bandwidth: 70 MHz.
+- Sampling rate: **250 MSa/s single channel, 125 MSa/s dual channel.**
+- Record length: **6000 samples single channel, 3000 samples dual
+  channel.**
+- SEC/DIV range: 5 ns/div – 500 s/div (1-2-5 sequence, matches
+  `TimeScale`'s `ns5..s500`). Rising time ≤ 5 ns. Waveform interpolation:
+  `(sin x)/x`.
+- A/D converter: 8-bit. VOLTS/DIV range: 10 mV/div – 10 V/div at BNC input.
+  Measurement range: ±5 div (screen shows ±4 div — see "Voltage
+  calibration" for how the extra div of headroom was independently
+  measured).
+- Trigger: edge only; Auto/Normal/Single; level ±4 divisions from center,
+  accuracy 0.2 div; rising/falling/both; CH1 or CH2 source.
+- Input: DC/AC/GND coupling; 1MΩ ±2% / 25pF ±3pF (DC coupled) impedance;
+  probe attenuation 1×/10× selectable, **1×/10×/100×/1000× supported** for
+  scaling; 150 Vrms input protection.
+- Display: 2.6" 64K-color TFT-LCD, 320×240 pixels.
+- AWG: sine 1Hz–25MHz, square 1Hz–10MHz, ramp 1Hz–1MHz, expon 1Hz–5MHz.
+  Sampling rate 250 MSa/s. **Amplitude: 2.5 Vpp into 50Ω, 5 Vpp into high
+  impedance.** Output impedance 50Ω. Waveform depth 512 samples, 12-bit
+  vertical resolution. Single channel output (CH1 only).
+- DMM: 4000 counts max resolution; voltage/current/resistance/capacitance/
+  diode/continuity; max 600V AC/DC, max 10A AC/DC.
+- Power: 100-240V AC or 5V DC/2A; 2×2600mAh batteries; <2.5W consumption.
+
+**Sampling-rate discrepancy worth resolving later:** our verified formula
+(`sample_rate = 100/time_per_div`, see below) was only empirically checked
+across `us1`..`us100`. At the fast end of the `TimeScale` range it predicts
+sample rates well above the datasheet's 250 MSa/s single-channel cap —
+e.g. `ns200` (2×10⁻⁷ s/div) implies 500 MSa/s, already over the limit, and
+it gets worse at `ns100`..`ns5`. The datasheet's own "Waveform
+Interpolation (sin x)/x" line all but confirms the device doesn't actually
+sample that fast at those timebases — it interpolates a lower real sample
+rate up to fill the display. **Don't trust the `100/time_per_div` formula
+at `ns5`..`ns200` until this is re-derived/re-verified**; it's fine at
+`us1` and slower (200 MSa/s at `ns500` is still under the 250 MSa/s cap,
+so that one specific point is probably still okay, but wasn't itself
+re-checked either).
+
+The AWG amplitude spec also resolves an earlier open question: "amplitude"
+was empirically found to behave as a peak value (`Vpp = 2×amplitude`) at
+high-impedance load — this datasheet line explains why (5 Vpp into
+high-Z, i.e. max amplitude=2.5 setting → Vpp=5V, matching what we measured
+when driving the scope's own 1MΩ input).
 
 ## Repo layout
 
@@ -187,14 +245,23 @@ inconsistent.
 
 - 1000 (default), 1024, 1536, 2048, 3072, 4096: all confirmed working single
   calls (post power-cycle) with the current firmware.
+- The official datasheet states the device's single-channel record length
+  is **6000 samples** (3000 dual-channel) — see "Official datasheet
+  specs" above. This is now used as the cap in `scripts/capture.py
+  --duration`, raised from the earlier ad-hoc 4096 (highest value we'd
+  actually tested at the time). **Not yet independently re-verified
+  against real hardware between 4096 and 6000** — the device was off when
+  this was raised, purely on the strength of the datasheet. If a future
+  capture in that range misbehaves, that's a real, notable finding
+  (datasheet wrong, or record length shared with something else) — flag it
+  loudly rather than assuming it's fine.
 - 40960 in one call: **wedged the device** (see above). 2,000,000 in one
   call: **worse** — dropped off the USB bus and powered itself off (see
-  above). The real ceiling is somewhere between 4096 and 40960 and was not
-  characterized further — if a larger single capture is needed, step up
-  cautiously in a few-thousand-sample increments and verify `print` still
-  works after each attempt, rather than jumping straight to a big number.
-  `scripts/capture.py --duration` enforces the confirmed-safe 4096 cap by
-  default; `--force` bypasses it and should be treated as "don't."
+  above). Both are well past the 6000-sample rated record length, so
+  neither contradicts the datasheet number — if anything they corroborate
+  that something bad starts somewhere not too far past it.
+  `scripts/capture.py --force` bypasses the 6000 cap and should be treated
+  as "don't," full stop.
 - If more total samples are needed than a safe single call provides, prefer
   accepting the coarser frequency resolution of a smaller single capture over
   using `-n > 1` to get more samples — the timing corruption from multi-call
@@ -436,13 +503,18 @@ When asked something like *"capture from the scope so we can FFT in the
   `--time-scale`)? Only tested at `--capture-chunk 4096`, `--time-scale
   ms1`, `-n 1`. Also worth checking whether it correlates with the ~44%
   single-call zero-crossing glitch rate noted below — same root cause?
-- Exact single-call `--capture-chunk` ceiling between 4096 and 40960 not
-  found. Worth bisecting carefully (with the user's attention, since a wedge
-  needs a physical battery pull to fix -- and per the 2,000,000-sample test,
-  overshooting further can apparently power the device off entirely, not
-  just wedge it) if larger single captures become necessary. This needs to
-  be revisited -- session ended here after the device shut off from that
-  test and had to be power-cycled.
+- `scripts/capture.py`'s safety cap was raised from the empirically-tested
+  4096 to the datasheet's rated 6000-sample record length, but 4096-6000
+  itself is untested on real hardware (device was off) -- worth confirming
+  a capture right at or near 6000 actually works cleanly before trusting
+  it fully. Exact wedge/shutoff ceiling above that (datasheet says 6000 is
+  the max anyway, so there's no legitimate reason to go higher) remains
+  uncharacterized and shouldn't need to be -- don't go looking for it.
+- Re-derive/re-verify the `sample_rate = 100/time_per_div` formula at
+  `ns5`..`ns200` (see "Official datasheet specs" above) -- it was only
+  checked at `us1`..`us100` and the datasheet's 250 MSa/s single-channel
+  cap plus its `(sin x)/x` interpolation note both suggest it breaks down
+  at the fast end.
 - The ~44% single-call glitch rate (spurious zero-crossing from the 64-byte
   sub-chunk re-triggering) was observed on a small sample (9 captures). Worth
   a larger-N characterization if it starts affecting results, and worth

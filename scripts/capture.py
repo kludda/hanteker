@@ -15,9 +15,10 @@ Since there's no way to read the device's current settings back over USB
 to be calibrated correctly.
 
 --duration (seconds) picks --capture-chunk for you via --time-scale's
-sample rate, capped to the confirmed-safe range (64-4096 samples, see
-CLAUDE.md "Known single-call --capture-chunk sizes") -- pass
---capture-chunk directly instead if you need to go past that cap.
+sample rate, capped to the device's rated single-channel record length
+(64-6000 samples, per the official datasheet -- see CLAUDE.md "Known
+single-call --capture-chunk sizes") -- pass --capture-chunk directly
+instead if you need to go past that cap.
 
 Output file: <YYYYMMDD-HHMMSS>_ch<channel>_<sample_rate_hz>Hz.csv
 """
@@ -32,9 +33,14 @@ import hantek_utils as hu
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 DEFAULT_CLI = SCRIPT_DIR.parent / "target" / "release" / "hanteker_cli"
-DEFAULT_CAPTURE_CHUNK = 4096  # known-safe single-call size, see CLAUDE.md
 MIN_CAPTURE_CHUNK = 64  # device minimum, hanteker_lib panics below this
-MAX_SAFE_CAPTURE_CHUNK = 4096  # highest CONFIRMED-safe size; larger has wedged the device, see CLAUDE.md
+# Rated single-channel record length, per the official datasheet ("3.
+# TECHNICAL SPECIFICATIONS": Record length 6000 samples single channel,
+# 3000 dual channel -- see CLAUDE.md). Only empirically verified up to 4096
+# so far (device was off when this was raised to the spec'd value) --
+# larger single captures wedged or worse (see CLAUDE.md "Device can wedge").
+DEFAULT_CAPTURE_CHUNK = 6000
+MAX_SAFE_CAPTURE_CHUNK = 6000
 
 
 def check_gui_not_running():
@@ -102,14 +108,16 @@ def main():
             parser.error(
                 f"--duration {args.duration}s at --time-scale {args.time_scale} "
                 f"({sample_rate:,.0f} Sa/s) would need a {capture_chunk}-sample capture, "
-                f"above the {MAX_SAFE_CAPTURE_CHUNK}-sample confirmed-safe ceiling (larger "
-                f"single captures have wedged the device before, see CLAUDE.md). Max safe "
-                f"--duration at this --time-scale is ~{max_duration:.6f}s, or pick a coarser "
-                f"--time-scale, or pass --force to bypass this cap."
+                f"above the device's rated {MAX_SAFE_CAPTURE_CHUNK}-sample single-channel "
+                f"record length (larger single captures have wedged the device, or worse, "
+                f"see CLAUDE.md). Max --duration at this --time-scale is "
+                f"~{max_duration:.6f}s, or pick a coarser --time-scale, or pass --force to "
+                f"bypass this cap."
             )
         elif capture_chunk > MAX_SAFE_CAPTURE_CHUNK:
             print(f"warning: --force set, requesting a {capture_chunk}-sample capture "
-                  f"past the {MAX_SAFE_CAPTURE_CHUNK}-sample confirmed-safe ceiling", file=sys.stderr)
+                  f"past the device's rated {MAX_SAFE_CAPTURE_CHUNK}-sample record length",
+                  file=sys.stderr)
     elif args.capture_chunk is not None:
         capture_chunk = args.capture_chunk
     else:
