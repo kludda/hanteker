@@ -16,9 +16,9 @@ import cmath
 import math
 import sys
 
-import hantek_calib as hc
+import hantek_utils as hu
 
-SECONDS_PER_DIV = hc.SECONDS_PER_DIV
+SECONDS_PER_DIV = hu.SECONDS_PER_DIV
 
 
 def fft(a):

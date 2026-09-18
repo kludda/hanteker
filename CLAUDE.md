@@ -232,8 +232,8 @@ voltage = (raw_byte - 128) * volts_per_count
 volts_per_count = selected_scale_in_volts_per_div / 25
 ```
 
-**This is the adopted formula** (implemented as `DEFAULT_COUNTS_PER_DIV = 25`,
-`DEFAULT_CENTER_CODE = 128` in `scripts/hantek_calib.py`), derived from a
+**This is the adopted formula** (implemented as `COUNTS_PER_DIV = 25`,
+`CENTER_CODE = 128` in `scripts/hantek_utils.py`), derived from a
 direct physical measurement of the device rather than any capture-based
 curve fit:
 
@@ -273,11 +273,10 @@ affected by milder versions of the same issue without being caught. The
 button-press method above sidesteps all of this since it doesn't depend on
 a second signal path (AWG → cable → channel) being clean at all.
 
-`scripts/calibrate.py` and `calibration.json` still exist for anyone who
-wants to try to beat the /25 default for a specific channel/scale, but
-given how noisy that method was here, don't trust a calibration.json
-result over the physical default without independent verification (e.g. a
-multimeter).
+The AWG-based calibration script and its per-channel calibration.json
+output were removed (see git history if the approach is ever worth
+revisiting) -- `scripts/hantek_utils.py` now just hardcodes the /25
+physical formula.
 
 </details>
 
@@ -319,10 +318,11 @@ the two.
 
 - `raw_to_csv.py <in.bin> <out.csv>` — dumps `sample_index,raw_value`, zero
   assumptions, always correct.
-- `capture_to_csv.py --time-scale <X> <in.bin> <out.csv>` — calibrated
-  `sample_index,time_s,raw_value,voltage` using the formulas above. Override
-  `--sample-interval`, `--volts-per-count`, `--center-code` directly if
-  recalibrating.
+- `capture_to_csv.py --time-scale <X> --scale <Y> <in.bin> <out.csv>` —
+  calibrated `sample_index,time_s,raw_value,voltage` using the formulas
+  above (`--scale` picks the right volts/count for that vertical range,
+  defaults to `v1`). Override `--sample-interval`, `--volts-per-count`,
+  `--center-code` directly if needed.
 - `fft_freq.py --time-scale <X> <in.bin> [--top N]` — pure-Python radix-2 FFT
   (zero-padded to next power of 2, Hann-windowed, parabolic peak
   interpolation for sub-bin accuracy). Validated against a synthetic
