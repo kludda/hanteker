@@ -132,7 +132,7 @@ hanteker_cli scope --time-scale us10
 Only touch `awg ...` if the user actually wants the signal source changed —
 otherwise leave it alone (it holds its config independently of `device -m`).
 
-### Device can wedge
+### Device can wedge — or shut off entirely
 
 A single `capture` request for too many samples in one call (tested:
 40960 in one `-n 1 --capture-chunk 40960` call) locked up the device's USB
@@ -142,6 +142,20 @@ required **pulling the batteries** (full power cycle), which also resets
 *all* device settings (mode, channel config, timebase, AWG) — everything
 must be reapplied after that. Stay conservative with `--capture-chunk` on a
 single call (see limits below) to avoid this.
+
+**Worse case found later:** a single `-n 1 --capture-chunk 2000000` call
+(2,000,000 samples, `--time-scale us100` → 1 MSa/s, i.e. a 2-second capture
+at 1 MSa/s — 488× the confirmed-safe 4096-sample ceiling, ~49× the
+already-known-bad 40960) didn't just wedge the USB interface — the device
+**dropped off the USB bus entirely** (gone from `lsusb`, not just
+unresponsive) and then **powered itself off**. This is a strictly worse
+failure mode than the 40960 case above (that one stayed enumerated).
+Recovery: power back on, expect all settings reset, reapply everything.
+This was done deliberately (`scripts/capture.py --force`, added
+specifically to bypass the safety cap for this test) to see what a large
+overshoot actually does — don't repeat this casually. The real ceiling is
+still just "somewhere between 4096 and 40960", now with added evidence
+that overshooting further gets worse, not just "equally stuck."
 
 ## Capture semantics — READ BEFORE TRUSTING TIMING/FREQUENCY DATA
 
@@ -173,11 +187,14 @@ inconsistent.
 
 - 1000 (default), 1024, 1536, 2048, 3072, 4096: all confirmed working single
   calls (post power-cycle) with the current firmware.
-- 40960 in one call: **wedged the device** (see above). The real ceiling is
-  somewhere between 4096 and 40960 and was not characterized further — if a
-  larger single capture is needed, step up cautiously in a few-thousand-sample
-  increments and verify `print` still works after each attempt, rather than
-  jumping straight to a big number.
+- 40960 in one call: **wedged the device** (see above). 2,000,000 in one
+  call: **worse** — dropped off the USB bus and powered itself off (see
+  above). The real ceiling is somewhere between 4096 and 40960 and was not
+  characterized further — if a larger single capture is needed, step up
+  cautiously in a few-thousand-sample increments and verify `print` still
+  works after each attempt, rather than jumping straight to a big number.
+  `scripts/capture.py --duration` enforces the confirmed-safe 4096 cap by
+  default; `--force` bypasses it and should be treated as "don't."
 - If more total samples are needed than a safe single call provides, prefer
   accepting the coarser frequency resolution of a smaller single capture over
   using `-n > 1` to get more samples — the timing corruption from multi-call
@@ -314,14 +331,41 @@ Trigger level (`scope --trigger-level`) is a separate device setting (where
 the trigger fires) — unrelated to this voltage calibration, don't conflate
 the two.
 
+### Channel offset — confirmed to shift the raw ADC codes, not just the display
+
+`channel -c <ch> --offset <V>` isn't purely cosmetic (repositioning the
+trace on screen) — it shifts what the raw code range actually means,
+verified empirically: applying `--offset 1.0` at `--scale v1`
+(`volts_per_count = 0.04`) shifted the measured center from ~127 to ~152.1,
+a +25.1 raw-count shift, matching `1.0V / 0.04V = 25` counts almost
+exactly. So:
+
+```
+voltage = (raw_byte - 128) * volts_per_count - offset_volts
+```
+
+Implemented in `hantek_utils.py`'s `raw_to_voltage`/`raw_bytes_to_voltages`
+(optional `offset` parameter, defaults to 0) and exposed as `--offset` on
+`capture_to_csv.py` and `capture.py`.
+
 ## Analysis scripts (`scripts/`, pure Python, no numpy/pip needed)
 
+- `capture.py --channel <1|2> --scale <X> --time-scale <Y> [--offset <V>]` —
+  the normal end-to-end entry point for a one-off capture. Sets exactly
+  `channel --scale/--offset` and `scope --time-scale` on the device (nothing
+  else — no `--probe`/`--coupling`/`--enable`/device-mode, those are left as
+  whatever they already are), runs a single capture (`-n 1`, always), and
+  writes a calibrated CSV named
+  `<YYYYMMDD-HHMMSS>_ch<channel>_<sample_rate_hz>Hz.csv`. Since there's no
+  way to read the device's current settings back (see above), you have to
+  already know these four values — e.g. by reading them off the physical
+  screen — for the output to be correctly calibrated.
 - `raw_to_csv.py <in.bin> <out.csv>` — dumps `sample_index,raw_value`, zero
   assumptions, always correct.
-- `capture_to_csv.py --time-scale <X> --scale <Y> <in.bin> <out.csv>` —
-  calibrated `sample_index,time_s,raw_value,voltage` using the formulas
-  above (`--scale` picks the right volts/count for that vertical range,
-  defaults to `v1`). Override `--sample-interval`, `--volts-per-count`,
+- `capture_to_csv.py --time-scale <X> --scale <Y> [--offset <V>] <in.bin>
+  <out.csv>` — same calibrated CSV as `capture.py`, but for converting an
+  already-captured raw `.bin` file after the fact. `--scale`/`--offset`
+  default to `v1`/`0`. Override `--sample-interval`, `--volts-per-count`,
   `--center-code` directly if needed.
 - `fft_freq.py --time-scale <X> <in.bin> [--top N]` — pure-Python radix-2 FFT
   (zero-padded to next power of 2, Hann-windowed, parabolic peak
@@ -394,8 +438,11 @@ When asked something like *"capture from the scope so we can FFT in the
   single-call zero-crossing glitch rate noted below — same root cause?
 - Exact single-call `--capture-chunk` ceiling between 4096 and 40960 not
   found. Worth bisecting carefully (with the user's attention, since a wedge
-  needs a physical battery pull to fix) if larger single captures become
-  necessary.
+  needs a physical battery pull to fix -- and per the 2,000,000-sample test,
+  overshooting further can apparently power the device off entirely, not
+  just wedge it) if larger single captures become necessary. This needs to
+  be revisited -- session ended here after the device shut off from that
+  test and had to be power-cycled.
 - The ~44% single-call glitch rate (spurious zero-crossing from the 64-byte
   sub-chunk re-triggering) was observed on a small sample (9 captures). Worth
   a larger-N characterization if it starts affecting results, and worth

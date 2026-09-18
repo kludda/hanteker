@@ -14,6 +14,12 @@ each division is exactly 25 raw counts, independent of channel/scale/probe.
 See CLAUDE.md "Voltage calibration" for the derivation (an earlier
 AWG-based curve fit was tried and abandoned -- too sensitive to
 cable/connection noise to trust, see CLAUDE.md).
+
+Channel offset (`channel --offset <V>`) shifts what the raw code range
+means, not just where the trace sits on screen -- verified empirically:
+applying `--offset 1.0` at `--scale v1` (volts_per_count=0.04) shifted the
+measured center by +25.1 raw counts, matching `1.0V / 0.04 = 25` counts
+exactly. So `voltage = (raw_byte - 128) * volts_per_count - offset_volts`.
 """
 
 # seconds per division for every --time-scale value hanteker_cli accepts
@@ -52,9 +58,11 @@ def volts_per_count_for(scale: str) -> float:
     return SCALE_VOLTS[scale] / COUNTS_PER_DIV
 
 
-def raw_to_voltage(raw_byte: int, volts_per_count: float, center_code: float = CENTER_CODE) -> float:
-    return (raw_byte - center_code) * volts_per_count
+def raw_to_voltage(raw_byte: int, volts_per_count: float, center_code: float = CENTER_CODE,
+                    offset: float = 0.0) -> float:
+    return (raw_byte - center_code) * volts_per_count - offset
 
 
-def raw_bytes_to_voltages(data: bytes, volts_per_count: float, center_code: float = CENTER_CODE):
-    return [(b - center_code) * volts_per_count for b in data]
+def raw_bytes_to_voltages(data: bytes, volts_per_count: float, center_code: float = CENTER_CODE,
+                           offset: float = 0.0):
+    return [(b - center_code) * volts_per_count - offset for b in data]

@@ -12,7 +12,8 @@ Voltage conversion uses the physically-measured 25 counts/div, 128
 center-code formula (see hantek_utils.py and CLAUDE.md "Voltage
 calibration"). Pass --scale (matching what the capture was actually taken
 with) to get the right volts/count for that vertical range; without it,
-v1 is assumed. --volts-per-count/--center-code override either.
+v1 is assumed. Pass --offset too if the channel wasn't at offset 0.
+--volts-per-count/--center-code override the derived values directly.
 """
 import argparse
 import csv
@@ -34,6 +35,8 @@ def main():
                          help="seconds per sample; overrides --time-scale if both given")
     parser.add_argument("--scale", choices=sorted(hu.SCALE_VOLTS), default="v1",
                          help="the --scale the capture was taken at (default: v1)")
+    parser.add_argument("--offset", type=float, default=0.0,
+                         help="the channel --offset (volts) the capture was taken at (default: 0)")
     parser.add_argument("--volts-per-count", type=float, default=None,
                          help="override the derived value")
     parser.add_argument("--center-code", type=float, default=None,
@@ -59,7 +62,7 @@ def main():
     writer.writerow(["sample_index", "time_s", "raw_value", "voltage"])
     for i, b in enumerate(data):
         t = i * sample_interval
-        v = hu.raw_to_voltage(b, volts_per_count, center_code)
+        v = hu.raw_to_voltage(b, volts_per_count, center_code, args.offset)
         writer.writerow([i, f"{t:.9e}", b, f"{v:.4f}"])
 
     if out is not sys.stdout:

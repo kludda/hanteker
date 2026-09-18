@@ -59,6 +59,44 @@ hanteker_cli print
 Only one process can hold the device at a time — close the GUI before
 running CLI commands, and vice versa.
 
+### Capturing a signal to CSV (recommended workflow)
+
+`scripts/capture.py` is the primary way to pull a signal off the device:
+dial the channel in on the physical scope until it looks right (scale,
+offset, timebase, probe, coupling), then run:
+
+```
+python3 scripts/capture.py --channel 1 --scale v1 --offset 0 --time-scale ms1
+```
+
+It sets exactly `--scale`/`--offset` (via `channel`) and `--time-scale`
+(via `scope`) on the device, takes a single capture, and writes a
+calibrated CSV — `sample_index,time_s,raw_value,voltage` — named
+`<YYYYMMDD-HHMMSS>_ch<channel>_<sample_rate_hz>Hz.csv` in the current
+directory (override with `--out-dir`).
+
+By default it captures 4096 samples. Pass `--duration <seconds>` instead
+to specify how long to capture for — it computes the sample count from
+`--time-scale`'s sample rate for you, e.g. `--duration 0.02` at `ms1`
+(100k Sa/s) captures 2000 samples. `--duration` is capped to the
+confirmed-safe 64–4096 sample range (see `CLAUDE.md` — larger single
+captures have wedged the device before); it'll tell you the max
+`--duration` available at your `--time-scale` if you go over. Pass
+`--capture-chunk <N>` directly instead of `--duration` if you need to.
+
+Everything else on the device (`--probe`, `--coupling`, `--enable`, device
+mode) is left exactly as it already is — the script only touches the four
+values above. **There's no way to read the device's current settings back
+over USB**, so `--channel`/`--scale`/`--offset`/`--time-scale` have to
+already be known (e.g. read off the physical screen) for the output to be
+correctly calibrated — see "Channel zero-level" below for why `--offset`
+matters, and `CLAUDE.md` for the full voltage/timebase calibration
+derivation.
+
+Pure Python, no dependencies beyond the standard library. Other scripts in
+`scripts/` (`raw_to_csv.py`, `capture_to_csv.py`, `fft_freq.py`) cover
+converting an already-captured raw file and FFT analysis.
+
 ### CLI commands
 
 Global options (apply to every subcommand): `--timeout <ms>` (default 1000),
