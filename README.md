@@ -83,6 +83,31 @@ s1, s2, s5, s10, s20, s50, s100, s200, s500`.
 Run `hanteker_cli <command> --help` for the full, authoritative list of
 flags for any command.
 
+### Channel zero-level (vertical offset)
+
+The zero-level you can drag/move on the physical display (or step with the
+offset buttons) is fully controllable over USB via
+`channel -c <1|2> --offset <V>` — same underlying command the buttons send.
+
+On the wire it's a single raw byte in the range 0-200, sent with command
+`SCOPE_OFFSET_CH1`/`SCOPE_OFFSET_CH2` (`hanteker_lib/src/models/hantek2d42_codes.rs`).
+`hanteker_cli` converts your `--offset` value (volts) into that raw byte for
+you, linearly across a ±4-division window around whatever `--scale` is
+currently set (`hanteker_lib/src/models/hantek2d42.rs`,
+`set_channel_offset_with_auto_adjustment`) — i.e. `--offset` is clamped to
+roughly `±4 × scale` volts before it clips off-screen.
+
+**`--scale` must be given together with `--offset` in the same `channel`
+invocation.** Every `hanteker_cli` call is a fresh process with no memory of
+earlier ones, and the offset conversion needs to know the current scale (to
+compute that ±4-division window) — passing `--offset` alone, without
+`--scale` in that same call, fails with "missing or bad channel adjustment".
+E.g.:
+
+```
+hanteker_cli channel -c 1 --scale v1 --offset 0.25
+```
+
 ### Disclaimer
 I take no responsibility if this app breaks your oscilloscope! use at your own risk.
 
