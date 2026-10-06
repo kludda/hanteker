@@ -4,6 +4,10 @@ Hantek 2D42 (and possibly 2D72) handheld oscilloscope tool for Linux, Mac and Wi
 This is a fork of https://github.com/hkoosha/hanteker, updated to build against
 `rusb` instead of the abandoned `libusb` crate. GUI: https://github.com/hkoosha/hanteker_gui
 
+> **NOTE:** a capture over USB is limited to 3000 samples (e.g. 30 ms at
+> 1 ms/div), and captures cannot be joined into a longer recording. See
+> "Why 3000 and not more" below.
+
 ### Requirements
 
 - Rust toolchain (`cargo`, stable) — https://rustup.rs
