@@ -1,6 +1,6 @@
 .PHONY: build
 build: clear
-	cargo build
+	cargo build --release
 
 .PHONY: fmt
 fmt:
@@ -12,4 +12,4 @@ clippy: clear
 
 .PHONY: clear
 clear:
-	@for (( i=0; i<100; i++ )) ; do echo "" ; done
+	@i=0; while [ $$i -lt 100 ]; do echo ""; i=$$((i+1)); done

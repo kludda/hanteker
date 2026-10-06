@@ -1,10 +1,170 @@
 ### Hanteker
 Hantek 2D42 (and possibly 2D72) handheld oscilloscope tool for Linux, Mac and Windows.
 
-### Progress
-- Lib : Done
-- CLI : Done
-- GUI : Done -> https://github.com/hkoosha/hanteker_gui
+This is a fork of https://github.com/hkoosha/hanteker, updated to build against
+`rusb` instead of the abandoned `libusb` crate. GUI: https://github.com/hkoosha/hanteker_gui
+
+### Requirements
+
+- Rust toolchain (`cargo`, stable) — https://rustup.rs
+- `libusb-1.0` development headers + `pkg-config` (Linux), needed by the
+  `rusb` crate:
+  ```
+  sudo apt install -y libusb-1.0-0-dev pkg-config
+  ```
+
+### Clone
+
+```
+git clone git@github.com:kludda/hanteker.git
+cd hanteker
+```
+
+### Build
+
+Builds the whole workspace (`hanteker_lib` + `hanteker_cli`):
+
+```
+cargo build --release
+```
+
+The `hanteker_cli` binary is written to `target/release/hanteker_cli`.
+
+### USB permissions (Linux)
+
+The device (vid `0483`, pid `2d42`) enumerates as root-only by default.
+Install the provided udev rule so it's accessible without `sudo`:
+
+```
+sudo cp 99-hantek.rules /etc/udev/rules.d/
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+```
+
+Then unplug and replug the device.
+
+### Run
+
+```
+target/release/hanteker_cli print
+```
+
+Or install it onto your `PATH`:
+
+```
+cargo install --path hanteker_cli
+hanteker_cli print
+```
+
+Only one process can hold the device at a time — close the GUI before
+running CLI commands, and vice versa.
+
+### Capturing a signal to CSV (recommended workflow)
+
+`scripts/capture.py` is the primary way to pull a signal off the device:
+dial the channel in on the physical scope until it looks right (scale,
+offset, timebase, probe, coupling), then run:
+
+```
+python3 scripts/capture.py --channel 1 --scale v1 --offset 0 --time-scale ms1
+```
+
+It sets exactly `--scale`/`--offset` (via `channel`) and `--time-scale`
+(via `scope`) on the device, takes a single capture, and writes a
+calibrated CSV — `sample_index,time_s,raw_value,voltage` — named
+`<YYYYMMDD-HHMMSS>_ch<channel>_<sample_rate_hz>Hz.csv` in the current
+directory (override with `--out-dir`).
+
+By default it captures 3000 samples. Pass `--duration <seconds>` instead
+to specify how long to capture for — it computes the sample count from
+`--time-scale`'s sample rate for you, e.g. `--duration 0.02` at `ms1`
+(100k Sa/s) captures 2000 samples. Or pass `--capture-chunk <N>` to give
+the sample count directly. Either way the capture is limited to 64–3000
+samples; the error tells you the max duration available at your
+`--time-scale` if you go over.
+
+**Why 3000 and not more.** The datasheet rates the record length at 6000
+samples (one channel) or 3000 (both channels), but larger captures did not
+come back as clean data. Measured with a 1 kHz square wave on CH1, CH2
+disabled, two captures per size:
+
+| Capture size | Result |
+| --- | --- |
+| 3000 | Clean square wave from first sample to last. |
+| 4096 | Clean up to sample 3583; the last 512 samples are junk. |
+| 6000 | About 1022 junk samples (roughly 4536–5559), and the square wave's phase jumps across them, so the capture is not one continuous recording. |
+
+The junk is the same byte sequence in every capture (values hovering at
+mid-scale, 122–127), whatever the input signal is doing. Much larger
+requests are worse: 40960 samples locked up the device's USB interface
+until the batteries were pulled, and 2,000,000 made it drop off USB and
+power off. `--force` bypasses the 3000 limit (and then also disables the
+other channel first, since the record length is shared between enabled
+channels) — expect junk in the output if you use it.
+
+Everything else on the device (`--probe`, `--coupling`, `--enable`, device
+mode) is left exactly as it already is — the script only touches the four
+values above.
+
+**There's no way to read the device's current settings back
+over USB**, so `--channel`/`--scale`/`--offset`/`--time-scale` have to
+already be known (e.g. read off the physical screen) for the output to be
+correctly calibrated — see "Channel zero-level" below for why `--offset`
+matters, and `AGENTS.md` for the full voltage/timebase calibration
+derivation.
+
+Pure Python, no dependencies beyond the standard library. Other scripts in
+`scripts/` (`raw_to_csv.py`, `capture_to_csv.py`, `fft_freq.py`) cover
+converting an already-captured raw file and FFT analysis.
+
+### CLI commands
+
+Global options (apply to every subcommand): `--timeout <ms>` (default 1000),
+`-v`/`--verbose` (raise log level), `-s`/`--silent` (lower log level, wins
+over `-v`), `--no-quirks` (suppress UI-quirk warnings).
+
+| Command | Description | Key options |
+| --- | --- | --- |
+| `print` | Print device info (manufacturer, product, USB speed) | — |
+| `device` | Switch device function / start or stop the display | `-m, --mode <scope\|awg\|dmm>` · `--start` · `--stop` |
+| `channel` | Configure a scope channel | `-c, --channel <1\|2>` · `--enable` / `--disable` · `--coupling <ac\|dc\|gnd>` · `--probe <x1\|x10\|x100\|x1000>` · `--scale <mv10\|mv20\|mv50\|mv100\|mv200\|mv500\|v1\|v2\|v5\|v10>` · `--offset <V>` · `--enable-bandwidth-limit` / `--disable-bandwidth-limit` · `-f, --force-mode` |
+| `scope` | Configure scope timebase and trigger | `--time-scale <ns5..s500>` · `--time-offset <s>` · `--trigger-source <channel>` · `--trigger-slope <rising\|falling\|both>` · `--trigger-mode <auto\|normal\|single>` · `--trigger-level <V>` · `-f, --force-mode` |
+| `awg` | Configure the arbitrary waveform generator | `-t, --type <square\|ramp\|sin\|trap\|arb1..arb4>` · `--frequency <Hz>` · `-a, --amplitude <V>` · `-o, --offset <V>` · `--duty-square <%>` · `--duty-ramp <%>` · `--duty-trap-rise/-high/-low <%>` · `--start` · `--stop` · `-f, --force-mode` |
+| `capture` | Capture raw ADC samples from one or more channels to stdout | `-c, --channel <1\|2>` (repeatable) · `--capture-chunk <N>` (default 1000) · `-n, --num-captures <N>` (default infinite) · `-f, --force-mode` |
+| `shell` | Generate a shell completion script | `-s, --shell <bash\|zsh\|fish\|...>` · `-n, --name-override <name>` |
+
+`--time-scale` accepts the 1-2-5 sequence at every decade:
+`ns5, ns10, ns20, ns50, ns100, ns200, ns500, us1, us2, us5, us10, us20, us50,
+us100, us200, us500, ms1, ms2, ms5, ms10, ms20, ms50, ms100, ms200, ms500,
+s1, s2, s5, s10, s20, s50, s100, s200, s500`.
+
+Run `hanteker_cli <command> --help` for the full, authoritative list of
+flags for any command.
+
+### Channel zero-level (vertical offset)
+
+The zero-level you can drag/move on the physical display (or step with the
+offset buttons) is fully controllable over USB via
+`channel -c <1|2> --offset <V>` — same underlying command the buttons send.
+
+On the wire it's a single raw byte in the range 0-200, sent with command
+`SCOPE_OFFSET_CH1`/`SCOPE_OFFSET_CH2` (`hanteker_lib/src/models/hantek2d42_codes.rs`).
+`hanteker_cli` converts your `--offset` value (volts) into that raw byte for
+you, linearly across a ±4-division window around whatever `--scale` is
+currently set (`hanteker_lib/src/models/hantek2d42.rs`,
+`set_channel_offset_with_auto_adjustment`) — i.e. `--offset` is clamped to
+roughly `±4 × scale` volts before it clips off-screen.
+
+**`--scale` must be given together with `--offset` in the same `channel`
+invocation.** Every `hanteker_cli` call is a fresh process with no memory of
+earlier ones, and the offset conversion needs to know the current scale (to
+compute that ±4-division window) — passing `--offset` alone, without
+`--scale` in that same call, fails with "missing or bad channel adjustment".
+E.g.:
+
+```
+hanteker_cli channel -c 1 --scale v1 --offset 0.25
+```
 
 ### Disclaimer
 I take no responsibility if this app breaks your oscilloscope! use at your own risk.
@@ -12,3 +172,8 @@ I take no responsibility if this app breaks your oscilloscope! use at your own r
 ### Original Work
 This is port of the C application to Rust, available at: https://github.com/lucaoli/Hantek.
 
+### License
+GPL-3.0, see [LICENSE](LICENSE). This is a modified fork of
+https://github.com/hkoosha/hanteker and https://github.com/hkoosha/hanteker_gui,
+both GPL-3.0; the changes and the scripts in `scripts/` are released under
+the same license.

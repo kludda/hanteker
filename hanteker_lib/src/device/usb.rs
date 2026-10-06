@@ -1,6 +1,9 @@
 use std::time::Duration;
 
-use libusb::{ConfigDescriptor, Context, Device, DeviceDescriptor, DeviceHandle, Language, Speed};
+use libusb::{
+    ConfigDescriptor, Context, Device, DeviceDescriptor, DeviceHandle, Language, Speed,
+    UsbContext,
+};
 use log::{debug, trace};
 use thiserror::Error;
 
@@ -66,19 +69,19 @@ impl HantekUsbError {
     }
 }
 
-pub struct HantekUsbDevice<'a> {
+pub struct HantekUsbDevice {
     timeout: Duration,
     claimed_interface: Option<u8>,
-    pub device: Device<'a>,
+    pub device: Device<Context>,
     pub descriptor: DeviceDescriptor,
-    pub handle: DeviceHandle<'a>,
+    pub handle: DeviceHandle<Context>,
     pub language: Option<Language>,
     pub config: ConfigDescriptor,
 }
 
-impl<'a> HantekUsbDevice<'a> {
+impl HantekUsbDevice {
     pub fn open(
-        context: &'a Context,
+        context: &Context,
         timeout: Duration,
         (vid, pid): (u16, u16),
     ) -> Result<Self, HantekUsbError> {
@@ -110,7 +113,7 @@ impl<'a> HantekUsbDevice<'a> {
     fn find_devices(
         context: &Context,
         (vid, pid): (u16, u16),
-    ) -> Result<Vec<(Device, DeviceDescriptor)>, HantekUsbError> {
+    ) -> Result<Vec<(Device<Context>, DeviceDescriptor)>, HantekUsbError> {
         Ok(context
             .devices()
             .map_err(|error| HantekUsbError::GetUsbDevicesError { error })?
@@ -147,7 +150,7 @@ impl<'a> HantekUsbDevice<'a> {
     fn find_single_device(
         context: &Context,
         (vid, pid): (u16, u16),
-    ) -> Result<(Device, DeviceDescriptor), HantekUsbError> {
+    ) -> Result<(Device<Context>, DeviceDescriptor), HantekUsbError> {
         let mut devices = Self::find_devices(context, (vid, pid))?;
 
         match devices.len() {
@@ -162,7 +165,7 @@ impl<'a> HantekUsbDevice<'a> {
     }
 
     fn get_device_language(
-        handle: &DeviceHandle,
+        handle: &DeviceHandle<Context>,
         timeout: Duration,
     ) -> Result<Option<Language>, HantekUsbError> {
         handle
@@ -275,6 +278,7 @@ impl<'a> HantekUsbDevice<'a> {
                 Speed::Full => "Full (12MBps)",
                 Speed::High => "High (480MBps)",
                 Speed::Super => "Super (5000MBps)",
+                _ => "Unknown",
             },
             self.get_manufacturer()
                 .unwrap_or_else(|_| "ERROR".to_string()),

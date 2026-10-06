@@ -43,17 +43,17 @@ impl Hantek2D42Error {
     }
 }
 
-pub struct Hantek2D42<'a> {
-    pub usb: HantekUsbDevice<'a>,
+pub struct Hantek2D42 {
+    pub usb: HantekUsbDevice,
     config: HantekConfig,
 }
 
-impl<'a> Hantek2D42<'a> {
-    pub fn new(usb: HantekUsbDevice<'a>, config: HantekConfig) -> Self {
+impl Hantek2D42 {
+    pub fn new(usb: HantekUsbDevice, config: HantekConfig) -> Self {
         Self { usb, config }
     }
 
-    pub fn open(context: &'a Context, timeout: Duration) -> Result<Self, Hantek2D42Error> {
+    pub fn open(context: &Context, timeout: Duration) -> Result<Self, Hantek2D42Error> {
         let usb = HantekUsbDevice::open(context, timeout, (VENDOR_ID__2D42, PRODUCT_ID__2D42))
             .map_err(|error| Hantek2D42Error::HantekUsbError {
                 error,
